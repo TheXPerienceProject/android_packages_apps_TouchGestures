@@ -24,10 +24,6 @@ import android.content.IntentFilter;
 import android.hardware.camera2.CameraAccessException;
 import android.hardware.camera2.CameraCharacteristics;
 import android.hardware.camera2.CameraManager;
-import android.hardware.Sensor;
-import android.hardware.SensorEvent;
-import android.hardware.SensorEventListener;
-import android.hardware.SensorManager;
 import android.Manifest;
 import android.media.AudioManager;
 import android.media.session.MediaSessionLegacyHelper;
@@ -65,12 +61,10 @@ public class KeyHandler implements DeviceKeyHandler {
     private final Vibrator mVibrator;
 
     private final SparseIntArray mActionMapping = new SparseIntArray();
-    private SensorManager mSensorManager;
-    private Sensor mProximitySensor;
-    private WakeLock mProximityWakeLock;
 
     private String mRearCameraId;
     private boolean mTorchEnabled;
+    private boolean mInPocket;
 
     private final BroadcastReceiver mUpdateReceiver = new BroadcastReceiver() {
         @Override
@@ -104,13 +98,6 @@ public class KeyHandler implements DeviceKeyHandler {
 
         mVibrator = context.getSystemService(Vibrator.class);
 
-        if (mProximitySensor != null) {
-            mSensorManager = context.getSystemService(SensorManager.class);
-            mProximitySensor = mSensorManager.getDefaultSensor(Sensor.TYPE_PROXIMITY);
-            mProximityWakeLock = mPowerManager.newWakeLock(
-                    PowerManager.PARTIAL_WAKE_LOCK, "TouchscreenGestureProximityWakeLock");
-        }
-
         mContext.registerReceiver(mUpdateReceiver,
                 new IntentFilter(TouchscreenGestureConstants.UPDATE_PREFS_ACTION));
     }
@@ -129,56 +116,31 @@ public class KeyHandler implements DeviceKeyHandler {
         }
     }
 
+    @Override
     public KeyEvent handleKeyEvent(final KeyEvent event) {
         final int action = mActionMapping.get(event.getScanCode(), -1);
-        if (action < 0 || event.getAction() != KeyEvent.ACTION_UP || !hasSetupCompleted()) {
+        if (action < 0 || event.getAction() != KeyEvent.ACTION_UP
+                || !hasSetupCompleted() || mInPocket) {
             return event;
         }
 
         if (action != 0 && !mEventHandler.hasMessages(GESTURE_REQUEST)) {
             final Message msg = getMessageForAction(action);
-            if (mProximitySensor != null) {
-                mGestureWakeLock.acquire(2 * 100);
-                mEventHandler.sendMessageDelayed(msg, 100);
-                processEvent(action);
-            } else {
-                mGestureWakeLock.acquire(EVENT_PROCESS_WAKELOCK_DURATION);
-                mEventHandler.sendMessage(msg);
-            }
+            mGestureWakeLock.acquire(EVENT_PROCESS_WAKELOCK_DURATION);
+            mEventHandler.sendMessage(msg);
         }
 
         return null;
     }
 
+    @Override
+    public void onPocketStateChanged(boolean inPocket) {
+        mInPocket = inPocket;
+    }
+
     private boolean hasSetupCompleted() {
         return Settings.Secure.getInt(mContext.getContentResolver(),
                 Settings.Secure.USER_SETUP_COMPLETE, 0) != 0;
-    }
-
-    private void processEvent(final int action) {
-        mProximityWakeLock.acquire();
-        mSensorManager.registerListener(new SensorEventListener() {
-            @Override
-            public void onSensorChanged(SensorEvent event) {
-                mProximityWakeLock.release();
-                mSensorManager.unregisterListener(this);
-                if (!mEventHandler.hasMessages(GESTURE_REQUEST)) {
-                    // The sensor took too long; ignoring
-                    return;
-                }
-                mEventHandler.removeMessages(GESTURE_REQUEST);
-                if (event.values[0] >= mProximitySensor.getMaximumRange()) {
-                    Message msg = getMessageForAction(action);
-                    mEventHandler.sendMessage(msg);
-                }
-            }
-
-            @Override
-            public void onAccuracyChanged(Sensor sensor, int accuracy) {
-                // Ignore
-            }
-
-        }, mProximitySensor, SensorManager.SENSOR_DELAY_FASTEST);
     }
 
     private Message getMessageForAction(final int action) {
